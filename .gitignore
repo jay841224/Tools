@@ -1,0 +1,29 @@
+# macOS 系統檔
+.DS_Store
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Python 虛擬環境
+transcribe_venv/
+venv/
+env/
+.env/
+
+# 日誌檔
+*.log
+
+# 輸出資料、模型快取目錄
+transcripts/
+models/
+
+# IDE / 編輯器設定
+.vscode/
+*.sublime-project
+*.sublime-workspace
+*.code-workspace
+
+# 其他
+*.swp
