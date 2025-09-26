@@ -1,0 +1,1244 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Spring Boot 斷路器壓測與監控工具</title>
+  <!-- 
+    單檔純前端工具：以瀏覽器發送負載到指定 URL，並透過 Actuator 查詢 Resilience4j 斷路器狀態。
+    特色
+    - 可設定：持續時間、每秒請求數(RPS)、最大並行數、CORS 模式、credentials、逾時、HTTP 方法/Headers/Body
+    - 即時圖表：實際 RPS 與平均延遲、斷路器狀態(Closed/Half-Open/Open)
+    - Actuator 監控：/actuator/circuitbreakers、/actuator/circuitbreakerevents、/actuator/metrics*
+    - 其他：單發測試、下載 CSV 統計、事件日誌、儲存/載入設定、深/淺色主題
+
+    注意事項
+    - 跨網域請求需要後端正確設定 CORS（含 Actuator）。可參考：
+      management.endpoints.web.cors.allowed-origins=http://localhost:*,http://127.0.0.1:*
+      management.endpoints.web.cors.allowed-methods=GET,POST,PUT,DELETE,OPTIONS
+      management.endpoints.web.cors.allowed-headers=*
+      management.endpoints.web.exposure.include=health,info,metrics,circuitbreakers,circuitbreakerevents
+    - 若以 no-cors 發送，response 將為 opaque（無法讀取狀態/內容）。
+  -->
+  <style>
+    :root{
+      --bg: #0b0d10;
+      --panel: #11151a;
+      --text: #e7eef5;
+      --muted: #9db0c5;
+      --border: #233042;
+      --accent: #5fb3ff;
+      --good: #35c759;
+      --warn: #ff9f0a;
+      --bad:  #ff453a;
+      --shadow: rgba(11, 15, 26, 0.6);
+    }
+    [data-theme="light"]{
+      --bg:#f6f8fb;
+      --panel:#ffffff;
+      --text:#0b0d10;
+      --muted:#566374;
+      --border:#dfe6ef;
+      --accent:#1b76e5;
+      --good:#15803d;
+      --warn:#b45309;
+      --bad:#b91c1c;
+      --shadow: rgba(17, 30, 63, 0.18);
+    }
+    *{box-sizing:border-box}
+    html,body{height:100%}
+    body{
+      margin:0;
+      background:var(--bg);
+      background-image:radial-gradient(circle at top, rgba(95,179,255,0.12), transparent 55%);
+      color:var(--text);
+      font:14px/1.55 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Inter,PingFang TC,Helvetica Neue,Arial;
+      color-scheme:dark;
+      min-height:100vh;
+      letter-spacing:0.01em;
+    }
+    body[data-theme="light"]{
+      color-scheme:light;
+      background:var(--bg);
+      background-image:radial-gradient(circle at top, rgba(27,118,229,0.08), transparent 60%);
+    }
+    h1{font-size:20px;margin:0;color:var(--text)}
+    h2{font-size:16px;margin:0;color:var(--muted)}
+    a{color:var(--accent)}
+    .container{
+      display:grid;
+      grid-template-columns:minmax(320px, 360px) 1fr;
+      gap:18px;
+      height:100%;
+      padding:24px clamp(16px,4vw,36px);
+      max-width:1440px;
+      margin:0 auto;
+    }
+    .panel{
+      background:var(--panel);
+      border:1px solid var(--border);
+      border-radius:16px;
+      padding:20px;
+      overflow:auto;
+      box-shadow:0 18px 36px -28px var(--shadow);
+      transition:transform 0.2s ease, box-shadow 0.2s ease;
+    }
+    .panel:hover{
+      transform:translateY(-2px);
+      box-shadow:0 22px 48px -32px rgba(95,179,255,0.25);
+    }
+    .panel > * + *{margin-top:16px}
+    .panel-header{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:12px;
+      padding-bottom:12px;
+      border-bottom:1px solid var(--border);
+    }
+    .panel-header h1{font-size:22px;margin:0}
+    .panel-header .switch{margin-left:auto}
+    .row{display:grid;grid-template-columns:repeat(2, minmax(0,1fr));gap:12px}
+    .row-3{display:grid;grid-template-columns:repeat(3, minmax(0,1fr));gap:12px}
+    label{display:block;font-size:12px;color:var(--muted);margin-bottom:6px;font-weight:600}
+    input,select,textarea{
+      width:100%;
+      background:rgba(255,255,255,0.02);
+      border:1px solid var(--border);
+      color:var(--text);
+      border-radius:10px;
+      padding:9px;
+      transition:border-color 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease;
+    }
+    textarea{min-height:92px;resize:vertical}
+    input:focus,select:focus,textarea:focus{
+      border-color:var(--accent);
+      box-shadow:0 0 0 3px rgba(95,179,255,0.18);
+      outline:none;
+      background:rgba(95,179,255,0.08);
+    }
+    .shortcut-row{
+      display:flex;
+      flex-wrap:wrap;
+      gap:6px;
+      margin-top:6px;
+    }
+    .btns{
+      display:flex;
+      flex-wrap:wrap;
+      gap:10px;
+      align-items:center;
+    }
+    button{
+      background:var(--accent);
+      border:none;
+      color:white;
+      border-radius:12px;
+      padding:9px 14px;
+      cursor:pointer;
+      transition:transform 0.15s ease, box-shadow 0.15s ease, background-color 0.2s ease;
+      box-shadow:0 10px 26px -18px rgba(95,179,255,0.7);
+      font-weight:600;
+      letter-spacing:0.02em;
+    }
+    button:hover{transform:translateY(-1px);box-shadow:0 14px 32px -18px rgba(95,179,255,0.9)}
+    button:active{transform:translateY(0);box-shadow:0 6px 16px -14px rgba(95,179,255,0.6)}
+    button:disabled{opacity:.45;cursor:not-allowed;transform:none;box-shadow:none}
+    button.secondary{
+      background:rgba(255,255,255,0.02);
+      color:var(--text);
+      border:1px solid var(--border);
+      box-shadow:none;
+    }
+    button.secondary:hover{background:rgba(95,179,255,0.12)}
+    button.warn{background:var(--warn);color:#111}
+    button.bad{background:var(--bad)}
+    .btn-compact{font-size:11px;padding:3px 8px;font-weight:500}
+    .kpi{
+      display:grid;
+      grid-template-columns:repeat(auto-fit, minmax(150px, 1fr));
+      gap:12px;
+    }
+    .kpi .card{
+      border:1px solid var(--border);
+      border-radius:14px;
+      padding:12px;
+      background:linear-gradient(180deg, rgba(95,179,255,0.05), transparent);
+      display:flex;
+      flex-direction:column;
+      gap:6px;
+    }
+    .kpi .val{font-size:22px;font-weight:700}
+    .flex{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+    .logs{
+      font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+      white-space:pre-wrap;
+      background:rgba(12,18,24,0.35);
+      border:1px solid var(--border);
+      border-radius:12px;
+      padding:10px;
+      height:200px;
+      overflow:auto;
+    }
+    .badge{
+      display:inline-block;
+      border:1px solid var(--border);
+      padding:2px 8px;
+      border-radius:99px;
+      color:var(--muted);
+      font-size:12px;
+      letter-spacing:0.08em;
+    }
+    .divider{height:1px;background:var(--border);margin:8px 0 4px}
+    .table{width:100%;border-collapse:collapse}
+    .table th,.table td{
+      border-bottom:1px solid var(--border);
+      padding:8px;
+      text-align:left;
+      font-size:12px;
+      white-space:nowrap;
+    }
+    .table td:last-child{white-space:normal}
+    .event-container{
+      max-height:260px;
+      overflow-y:auto;
+      border:1px solid var(--border);
+      border-radius:12px;
+      background:rgba(255,255,255,0.02);
+    }
+    .switch{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)}
+    .switch input{width:auto}
+    .footer{opacity:.72;font-size:12px;margin-top:4px;line-height:1.6}
+    .grid2{
+      display:grid;
+      grid-template-columns:repeat(auto-fit,minmax(240px,1fr));
+      gap:16px;
+    }
+    canvas{
+      width:100%!important;
+      height:240px!important;
+      background:rgba(8,12,18,0.25);
+      border-radius:12px;
+    }
+    .sticky-actions{
+      position:sticky;
+      bottom:0;
+      background:linear-gradient(180deg,rgba(17,21,26,0), var(--panel));
+      padding-top:12px;
+      margin-top:12px;
+      border-top:1px solid var(--border);
+    }
+    @media (max-width:1200px){
+      .container{grid-template-columns:1fr;height:auto;padding:20px}
+      #leftPanel{order:2}
+    }
+    @media (max-width:900px){
+      .row,.row-3{grid-template-columns:1fr}
+      .panel-header{flex-direction:column;align-items:flex-start}
+      .panel-header .switch{margin-left:0}
+      .btns button{flex:1 1 48%}
+      canvas{height:220px!important}
+    }
+    @media (max-width:600px){
+      .container{padding:16px}
+      .btns{gap:6px}
+      .btns button{flex:1 1 100%}
+      .shortcut-row button{flex:1 1 48%}
+      canvas{height:200px!important}
+    }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/date-fns@3.6.0"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0"></script>
+</head>
+<body>
+  <div class="container">
+    <!-- 左：設定與控制 -->
+    <div class="panel" id="leftPanel">
+      <div class="panel-header">
+        <h1>斷路器壓測與監控工具</h1>
+        <div class="switch" title="深/淺色主題">
+          <input type="checkbox" id="themeToggle" />
+          <label for="themeToggle">淺色</label>
+        </div>
+      </div>
+
+      <h2>請求設定</h2>
+      <div class="row">
+        <div>
+          <label>目標請求完整 URL</label>
+          <input id="targetUrl" placeholder="例如：http://localhost:8080/api/demo" />
+        </div>
+        <div>
+          <label>HTTP 方法</label>
+          <select id="method">
+            <option>GET</option><option>POST</option><option>PUT</option><option>DELETE</option><option>PATCH</option><option>HEAD</option><option>OPTIONS</option>
+          </select>
+        </div>
+      </div>
+      <div class="row-3">
+        <div>
+          <label>持續時間 (秒)</label>
+          <input id="duration" type="number" min="1" value="20" />
+        </div>
+        <div>
+          <label>每秒請求數 RPS</label>
+          <input id="rps" type="number" min="0" value="10" />
+        </div>
+        <div>
+          <label>最大並行數</label>
+          <input id="concurrency" type="number" min="1" value="20" />
+        </div>
+      </div>
+      <div class="row-3">
+        <div>
+          <label>逾時 (毫秒, 每筆)</label>
+          <input id="timeoutMs" type="number" min="0" value="10000" />
+        </div>
+        <div>
+          <label>CORS 模式</label>
+          <select id="corsMode">
+            <option value="cors">cors</option>
+            <option value="no-cors">no-cors</option>
+            <option value="same-origin">same-origin</option>
+          </select>
+        </div>
+        <div>
+          <label>Credentials</label>
+          <select id="credentials">
+            <option value="omit">omit</option>
+            <option value="same-origin">same-origin</option>
+            <option value="include">include</option>
+          </select>
+        </div>
+      </div>
+      <div class="row">
+        <div>
+          <label>Headers (JSON)</label>
+          <textarea id="headers" placeholder='例如：{"Content-Type":"application/json;charset=UTF-8"}'></textarea>
+          <div class="shortcut-row">
+            <button type="button" class="secondary btn-compact" onclick="$('#headers').value=JSON.stringify({'Content-Type':'application/json;charset=UTF-8'},null,2)">JSON</button>
+            <button type="button" class="secondary btn-compact" onclick="$('#headers').value=JSON.stringify({'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},null,2)">表單</button>
+            <button type="button" class="secondary btn-compact" onclick="$('#headers').value=JSON.stringify({'Content-Type':'text/plain;charset=UTF-8'},null,2)">純文字</button>
+            <button type="button" class="secondary btn-compact" onclick="$('#headers').value=JSON.stringify({'Content-Type':'application/json;charset=UTF-8','Authorization':'Bearer YOUR_TOKEN'},null,2)">JSON+認證</button>
+            <button type="button" class="secondary btn-compact" onclick="setupCubeTest()">CUBE系統</button>
+          </div>
+        </div>
+        <div>
+          <label>Body（文字或 JSON）</label>
+          <textarea id="body" placeholder='POST/PUT/PATCH 時可填寫'></textarea>
+          <div class="shortcut-row">
+            <button type="button" class="secondary btn-compact" onclick="$('#body').value=JSON.stringify({message:'測試訊息',data:'範例資料'},null,2)">JSON 範例</button>
+            <button type="button" class="secondary btn-compact" onclick="$('#body').value='key1=value1&key2=value2'">表單範例</button>
+            <button type="button" class="secondary btn-compact" onclick="$('#body').value='純文字內容測試'">純文字範例</button>
+          </div>
+        </div>
+      </div>
+      <div class="flex">
+        <label class="switch"><input type="checkbox" id="keepAlive"> keepalive</label>
+        <label class="switch"><input type="checkbox" id="autoScroll" checked> 自動滾動日誌</label>
+        <label class="switch"><input type="checkbox" id="savePreset" checked> 自動儲存設定</label>
+      </div>
+
+      <div class="btns sticky-actions">
+        <button id="startBtn">開始壓測</button>
+        <button id="stopBtn" class="warn">停止</button>
+        <button id="singleBtn" class="secondary">單發一次</button>
+        <button id="resetBtn" class="secondary">重置統計</button>
+        <button id="downloadBtn" class="secondary">下載 CSV</button>
+        <button onclick="location.reload()" class="secondary">重新整理</button>
+        <button onclick="diagnoseCORS()" class="secondary">CORS 診斷</button>
+        <button onclick="clearOldSettings()" class="secondary">清理舊設定</button>
+      </div>
+
+      <div class="divider"></div>
+      <h2>即時統計</h2>
+      <div class="kpi">
+        <div class="card"><div class="badge">總請求</div><div class="val" id="kTotal">0</div></div>
+        <div class="card"><div class="badge">成功 (2xx)</div><div class="val" id="k2xx">0</div></div>
+        <div class="card"><div class="badge">客戶錯誤 (4xx)</div><div class="val" id="k4xx">0</div></div>
+        <div class="card"><div class="badge">伺服錯誤 (5xx)</div><div class="val" id="k5xx">0</div></div>
+        <div class="card"><div class="badge">網路/其他</div><div class="val" id="kErr">0</div></div>
+        <div class="card"><div class="badge">併發數</div><div class="val" id="kInflight">0</div></div>
+      </div>
+      <div class="row">
+        <div class="card"><div class="badge">p50 延遲 (ms)</div><div class="val" id="kP50">-</div></div>
+        <div class="card"><div class="badge">p95 延遲 (ms)</div><div class="val" id="kP95">-</div></div>
+      </div>
+      <label>請求日誌</label>
+      <div id="logs" class="logs" aria-live="polite"></div>
+      <div class="footer">提示：若大量出現 CORS 錯誤，請確認目標服務與 Actuator 已開放跨網域。<br/>opaque 回應（no-cors）無法得知狀態碼，將被歸類至「網路/其他」。</div>
+    </div>
+
+    <!-- 右：圖表與 Actuator 監控 -->
+    <div class="panel">
+      <h2>即時圖表</h2>
+      <div class="grid2">
+        <div>
+          <canvas id="rpsChart"></canvas>
+        </div>
+        <div>
+          <canvas id="latChart"></canvas>
+        </div>
+      </div>
+
+      <div class="divider"></div>
+      <h2>Actuator 斷路器監控</h2>
+      <div class="row">
+        <div>
+          <label>Actuator Base URL</label>
+          <input id="actuatorBase" placeholder="例如：http://localhost:8080/actuator" />
+        </div>
+        <div>
+          <label>斷路器名稱（可多個，以逗號分隔）</label>
+          <input id="cbNames" placeholder="例如：demoService" />
+        </div>
+      </div>
+      <div class="row-3">
+        <div>
+          <label>輪詢間隔 (秒)</label>
+          <input id="pollSec" type="number" min="1" value="2" />
+        </div>
+        <div>
+          <label>事件類型</label>
+          <input id="eventTypes" placeholder="STATE_TRANSITION,ERROR,SUCCESS,IGNORED_ERROR,NOT_PERMITTED" value="STATE_TRANSITION,ERROR" />
+        </div>
+        <div class="btns">
+          <button id="monitorStart">開始監控 (GET)</button>
+          <button id="monitorStop" class="warn">停止監控</button>
+          <button id="probeCORS" class="secondary">OPTIONS 測試</button>
+          <button onclick="diagnoseActuator()" class="secondary">Actuator 診斷</button>
+          <button onclick="diagnoseSpecificCB()" class="secondary">斷路器診斷</button>
+          <button onclick="testCircuitBreakerUpdate()" class="secondary">手動控制 (POST)</button>
+        </div>
+      </div>
+
+      <div class="grid2">
+        <div>
+          <div class="badge">斷路器狀態（0=CLOSED, 1=HALF_OPEN, 2=OPEN）</div>
+          <canvas id="cbChart"></canvas>
+        </div>
+        <div>
+          <div class="badge">事件</div>
+          <div class="event-container">
+            <table class="table" id="evtTable">
+              <thead><tr><th>時間</th><th>名稱</th><th>類型</th><th>狀態</th><th>訊息</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div class="divider"></div>
+      <h2>小幫手</h2>
+      <ul>
+        <li>若監控取不到資料：請確認已加入 <code>management.endpoints.web.exposure.include=circuitbreakers,circuitbreakerevents,metrics</code></li>
+        <li>若瀏覽器報 CORS：於應用與 Actuator 設定允許的 origins/headers/methods</li>
+        <li>RPS 是近似控制；真實 RPS 以左上圖為準</li>
+        <li><strong>斷路器監控與控制說明</strong>：
+          <ul>
+            <li><strong>監控狀態 (GET)</strong>: <code>/actuator/circuitbreakers</code> - 一次取得所有斷路器狀態，用於監控</li>
+            <li><strong>手動控制 (POST)</strong>: <code>/actuator/circuitbreakers/{name}</code> + <code>{"updateState": "CLOSED|OPEN|HALF_OPEN"}</code> - 僅用於手動干預</li>
+            <li>一般監控<strong>只使用</strong>通用 GET endpoint，<strong>不需要</strong>個別斷路器端點</li>
+            <li>POST 控制功能僅用於手動熔斷或重置，非監控用途</li>
+          </ul>
+        </li>
+        <li>Spring Boot 3 + Resilience4j 需要使用 <code>resilience4j-spring-boot3</code> 而非 <code>resilience4j-spring-boot2</code></li>
+      </ul>
+    </div>
+  </div>
+
+<script>
+(function(){
+  const $ = sel => document.querySelector(sel);
+  const $$ = sel => Array.from(document.querySelectorAll(sel));
+
+  // THEME
+  const themeToggle = $('#themeToggle');
+  const applyTheme = () => {
+    document.body.setAttribute('data-theme', themeToggle.checked ? 'light' : 'dark');
+    localStorage.setItem('cbtool_theme_light', themeToggle.checked ? '1':'0');
+  }
+  themeToggle.checked = localStorage.getItem('cbtool_theme_light') === '1';
+  applyTheme();
+  themeToggle.addEventListener('change', applyTheme);
+
+  // ELEMENTS
+  const targetUrl = $('#targetUrl');
+  const method = $('#method');
+  const duration = $('#duration');
+  const rps = $('#rps');
+  const concurrency = $('#concurrency');
+  const timeoutMs = $('#timeoutMs');
+  const corsMode = $('#corsMode');
+  const credentials = $('#credentials');
+  const headers = $('#headers');
+  const body = $('#body');
+  const keepAlive = $('#keepAlive');
+  const autoScroll = $('#autoScroll');
+  const savePreset = $('#savePreset');
+
+  const startBtn = $('#startBtn');
+  const stopBtn = $('#stopBtn');
+  const singleBtn = $('#singleBtn');
+  const resetBtn = $('#resetBtn');
+  const downloadBtn = $('#downloadBtn');
+
+  const logs = $('#logs');
+  const kTotal=$('#kTotal'), k2xx=$('#k2xx'), k4xx=$('#k4xx'), k5xx=$('#k5xx'), kErr=$('#kErr'), kInflight=$('#kInflight');
+  const kP50=$('#kP50'), kP95=$('#kP95');
+
+  const actuatorBase = $('#actuatorBase');
+  const cbNames = $('#cbNames');
+  const pollSec = $('#pollSec');
+  const eventTypes = $('#eventTypes');
+  const monitorStart = $('#monitorStart');
+  const monitorStop = $('#monitorStop');
+  const probeCORS = $('#probeCORS');
+
+  // State
+  let run = { active:false, endAt:0, inFlight:0, permit:0, tickHandle:null, stopSignal:false };
+  let stats = { total:0, s2xx:0, s4xx:0, s5xx:0, err:0, lat:[], lastSecond:{count:0, sumLat:0}, buckets:[] };
+  let points = { rps:[], lat:[] };
+  let monitors = { timer:null, series:{}, events:[] };
+
+  // Load preset
+  (function loadPreset(){
+    try{
+      const raw = localStorage.getItem('cbtool_preset');
+      if(!raw) return;
+      const p = JSON.parse(raw);
+      // 修正舊的斷路器名稱
+      if(p.cbNames === 'queryHexDeviceId') {
+        p.cbNames = 'testBizServer';
+        log('🔧 自動更新舊的斷路器名稱: queryHexDeviceId → testBizServer');
+      }
+      for(const [k,v] of Object.entries(p)){
+        const el = {
+          targetUrl, method, duration, rps, concurrency, timeoutMs, corsMode, credentials, headers, body, keepAlive, autoScroll, savePreset,
+          actuatorBase, cbNames, pollSec, eventTypes
+        }[k];
+        if(!el) continue;
+        if(el.type === 'checkbox') el.checked = !!v; else el.value = v;
+      }
+    }catch(e){ console.warn('Preset load fail', e); }
+  })();
+
+  function remember(){
+    if(!savePreset.checked) return;
+    const data = {
+      targetUrl:targetUrl.value, method:method.value, duration:duration.value, rps:rps.value, concurrency:concurrency.value,
+      timeoutMs:timeoutMs.value, corsMode:corsMode.value, credentials:credentials.value, headers:headers.value, body:body.value,
+      keepAlive:keepAlive.checked, autoScroll:autoScroll.checked, savePreset:savePreset.checked,
+      actuatorBase:actuatorBase.value, cbNames:cbNames.value, pollSec:pollSec.value, eventTypes:eventTypes.value
+    };
+    localStorage.setItem('cbtool_preset', JSON.stringify(data));
+  }
+  $$('.panel input, .panel select, .panel textarea').forEach(el=>{
+    el.addEventListener('change', remember);
+    el.addEventListener('blur', remember);
+  })
+
+  function log(line){
+    const ts = new Date().toISOString().replace('T',' ').replace('Z','');
+    logs.textContent += `[${ts}] ${line}\n`;
+    if(autoScroll.checked) logs.scrollTop = logs.scrollHeight;
+  }
+
+  function percentile(arr, p){
+    if(!arr.length) return NaN;
+    const a = [...arr].sort((x,y)=>x-y);
+    const idx = Math.floor((p/100) * (a.length-1));
+    return a[idx];
+  }
+
+  // Charts setup
+  const rpsChart = new Chart($('#rpsChart'), {
+    type:'line',
+    data:{datasets:[
+      {label:'實際 RPS', data:[], parsing:false, borderWidth:2, pointRadius:0, tension:0.15},
+      {label:'平均延遲 (ms)', data:[], yAxisID:'y1', parsing:false, borderWidth:2, pointRadius:0, tension:0.15}
+    ]},
+    options:{
+      animation:false,
+      normalized:true,
+      scales:{
+        x:{type:'time', time:{unit:'second'}},
+        y:{title:{text:'RPS', display:true}, beginAtZero:true},
+        y1:{position:'right', title:{text:'Latency (ms)', display:true}, beginAtZero:true}
+      },
+      plugins:{legend:{display:true}}
+    }
+  });
+
+  const latChart = new Chart($('#latChart'), {
+    type:'line',
+    data:{datasets:[{label:'延遲 p50', data:[], borderWidth:2, pointRadius:0}, {label:'延遲 p95', data:[], borderWidth:2, pointRadius:0}]},
+    options:{animation:false, normalized:true, scales:{x:{type:'time', time:{unit:'second'}}, y:{beginAtZero:true, title:{text:'ms', display:true}}}}
+  });
+
+  const cbChart = new Chart($('#cbChart'), {
+    type:'line',
+    data:{datasets:[]},
+    options:{
+      animation:false,
+      scales:{x:{type:'time', time:{unit:'second'}}, y:{beginAtZero:true, suggestedMax:2, ticks:{stepSize:1}},},
+      plugins:{legend:{display:true}},
+      elements:{line:{stepped:true}, point:{radius:0}}
+    }
+  });
+
+  function updateKPI(){
+    kTotal.textContent = stats.total;
+    k2xx.textContent = stats.s2xx;
+    k4xx.textContent = stats.s4xx;
+    k5xx.textContent = stats.s5xx;
+    kErr.textContent = stats.err;
+    kInflight.textContent = run.inFlight;
+    const p50 = percentile(stats.lat, 50);
+    const p95 = percentile(stats.lat, 95);
+    kP50.textContent = isNaN(p50)? '-' : Math.round(p50);
+    kP95.textContent = isNaN(p95)? '-' : Math.round(p95);
+  }
+
+  function pushCharts(now){
+    // push once per second for RPS + avg latency
+    const ts = now ?? Date.now();
+    const rpsVal = stats.lastSecond.count;
+    const avgLat = stats.lastSecond.count ? (stats.lastSecond.sumLat / stats.lastSecond.count) : 0;
+    rpsChart.data.datasets[0].data.push({x:ts, y:rpsVal});
+    rpsChart.data.datasets[1].data.push({x:ts, y:Math.round(avgLat)});
+    rpsChart.update('none');
+
+    // p50, p95 line (snapshot)
+    const p50 = percentile(stats.lat, 50);
+    const p95 = percentile(stats.lat, 95);
+    if(!isNaN(p50)) latChart.data.datasets[0].data.push({x:ts, y:Math.round(p50)});
+    if(!isNaN(p95)) latChart.data.datasets[1].data.push({x:ts, y:Math.round(p95)});
+    latChart.update('none');
+
+    // reset window
+    stats.lastSecond = {count:0, sumLat:0};
+  }
+
+  setInterval(()=>{ // chart heartbeat each second
+    pushCharts();
+  }, 1000);
+
+  async function doFetchOnce(){
+    const url = targetUrl.value.trim();
+    if(!url){ log('❗ 請輸入目標 URL'); return; }
+    let hdr = {};
+    if(headers.value.trim()){
+      try{ hdr = JSON.parse(headers.value); }
+      catch(e){ log('❗ Headers 不是合法 JSON'); return; }
+    }
+    
+    // 偵錯：顯示實際發送的 Headers
+    log(`🔍 發送請求到: ${url}`);
+    log(`🔍 HTTP 方法: ${method.value}`);
+    log(`🔍 Headers: ${JSON.stringify(hdr)}`);
+    if(body.value && !['GET','HEAD','OPTIONS'].includes(method.value)){
+      log(`🔍 Body: ${body.value.substring(0, 100)}${body.value.length > 100 ? '...' : ''}`);
+    }
+    
+    const ctrl = new AbortController();
+    const to = Number(timeoutMs.value||0);
+    const tId = to>0 ? setTimeout(()=>ctrl.abort('timeout'), to) : null;
+    const started = performance.now();
+    try{
+      const res = await fetch(url, {
+        method: method.value,
+        headers: hdr,
+        body: ['GET','HEAD','OPTIONS'].includes(method.value)? undefined : body.value,
+        mode: corsMode.value,
+        credentials: credentials.value,
+        keepalive: keepAlive.checked,
+        signal: ctrl.signal,
+      });
+      const elapsed = performance.now()-started;
+      const st = res.status || 0;
+      classify(st, elapsed);
+      log(`← ${st} ${Math.round(elapsed)}ms`);
+      // best-effort read (opaque 無法讀)
+      try{ await res.text(); }catch(_){/* ignore */}
+    }catch(err){
+      const elapsed = performance.now()-started;
+      stats.err++; stats.total++; stats.lat.push(elapsed); stats.lastSecond.count++; stats.lastSecond.sumLat+=elapsed; updateKPI();
+      log(`× ${err?.name||'Error'} ${Math.round(elapsed)}ms`);
+    }finally{
+      if(tId) clearTimeout(tId);
+    }
+  }
+
+  function classify(status, elapsed){
+    stats.total++;
+    stats.lat.push(elapsed);
+    stats.lastSecond.count++;
+    stats.lastSecond.sumLat += elapsed;
+    if(status>=200 && status<300) stats.s2xx++;
+    else if(status>=400 && status<500) stats.s4xx++;
+    else if(status>=500 && status<600) stats.s5xx++;
+    else stats.err++; // 包含 0 (opaque / CORS 被擋 / 網路)
+    updateKPI();
+  }
+
+  function resetStats(){
+    stats = { total:0, s2xx:0, s4xx:0, s5xx:0, err:0, lat:[], lastSecond:{count:0,sumLat:0}, buckets:[] };
+    rpsChart.data.datasets.forEach(d=>d.data.length=0);
+    latChart.data.datasets.forEach(d=>d.data.length=0);
+    rpsChart.update('none');
+    latChart.update('none');
+    updateKPI();
+    logs.textContent = '';
+  }
+
+  // Scheduler: 100ms tick, token bucket to approximate RPS; respects max concurrency
+  function startRun(){
+    if(run.active){ log('已在執行'); return; }
+    const sec = Math.max(1, Number(duration.value||0));
+    const wantRps = Math.max(0, Number(rps.value||0));
+    const maxConc = Math.max(1, Number(concurrency.value||1));
+    run.active = true; run.stopSignal = false; run.inFlight = 0; run.permit = 0; run.endAt = Date.now() + sec*1000;
+    log(`▶ 開始：${sec}s, 目標 RPS=${wantRps}, 最大並行=${maxConc}`);
+
+    const tickInterval = 100; // ms
+    const perTick = wantRps * (tickInterval/1000);
+
+    run.tickHandle = setInterval(async ()=>{
+      if(run.stopSignal || Date.now() >= run.endAt){ stopRun(); return; }
+      run.permit += perTick;
+      while(run.permit >= 1 && run.inFlight < maxConc){
+        run.permit -= 1; run.inFlight++; updateKPI();
+        doFetchOnce().finally(()=>{ run.inFlight--; updateKPI(); });
+      }
+    }, tickInterval);
+  }
+
+  function stopRun(){
+    if(run.tickHandle) clearInterval(run.tickHandle);
+    run.tickHandle = null; run.active=false; run.stopSignal=true; log('■ 停止');
+  }
+
+  // Buttons
+  startBtn.addEventListener('click', startRun);
+  stopBtn.addEventListener('click', ()=>{ run.stopSignal=true; stopRun(); });
+  resetBtn.addEventListener('click', resetStats);
+  singleBtn.addEventListener('click', ()=>{ run.inFlight++; updateKPI(); doFetchOnce().finally(()=>{ run.inFlight--; updateKPI(); }); });
+  downloadBtn.addEventListener('click', ()=>{
+    const rows = [
+      ['total','2xx','4xx','5xx','errors','p50(ms)','p95(ms)'],
+      [stats.total, stats.s2xx, stats.s4xx, stats.s5xx, stats.err, Math.round(percentile(stats.lat,50)||0), Math.round(percentile(stats.lat,95)||0)]
+    ];
+    const csv = rows.map(r=>r.join(',')).join('\n');
+    const blob = new Blob([csv], {type:'text/csv'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'cbtool_stats.csv';
+    a.click();
+  });
+
+  // --- Actuator monitoring ---
+  function stateToNum(s){ return s==='CLOSED'?0 : s==='HALF_OPEN'?1 : s==='OPEN'?2 : null; }
+
+  function ensureCBSeries(names){
+    const list = names.split(',').map(s=>s.trim()).filter(Boolean);
+    list.forEach(n=>{
+      if(!monitors.series[n]){
+        monitors.series[n] = [];
+        cbChart.data.datasets.push({label:n, data:[], parsing:false, borderWidth:2, stepped:true, pointRadius:0});
+      }
+    });
+    // prune datasets not in list
+    cbChart.data.datasets = cbChart.data.datasets.filter(ds=>list.includes(ds.label));
+  }
+
+  async function fetchAllCBStates(base){
+    // 只使用通用端點取得所有斷路器狀態
+    try{
+      const res = await fetch(`${base.replace(/\/$/,'')}/circuitbreakers`, {mode:corsMode.value, credentials:credentials.value});
+      if(res.ok){
+        const js = await res.json();
+        // 根據你提供的格式: { "circuitBreakers": { "name": { "state": "CLOSED", ... }, ... } }
+        return js.circuitBreakers || {};
+      }
+    }catch(_){/* ignore */}
+    return {};
+  }
+
+  async function fetchCBEventsOnce(base, names, types){
+    const list = names.split(',').map(s=>s.trim()).filter(Boolean);
+    const out = [];
+    for(const n of list){
+      try{
+        const url = `${base.replace(/\/$/,'')}/circuitbreakerevents/${encodeURIComponent(n)}?type=${encodeURIComponent(types)}`;
+        const res = await fetch(url, {mode:corsMode.value, credentials:credentials.value});
+        if(!res.ok) continue;
+        const js = await res.json();
+        const events = js?.circuitBreakerEvents || js?.events || js || [];
+        events.forEach(ev=>{
+          out.push({ time: ev?.creationTime || ev?.timestamp || ev?.time || new Date().toISOString(), name: n, type: ev?.type, state: ev?.stateTransition || ev?.state || '', message: ev?.errorMessage || ev?.message || '' });
+        });
+      }catch(_){/* ignore */}
+    }
+    return out.sort((a,b)=>new Date(a.time)-new Date(b.time));
+  }
+
+  function updateEvtTable(){
+    const tbody = $('#evtTable tbody');
+    const container = document.querySelector('.event-container');
+    tbody.innerHTML = '';
+    const recent = monitors.events.slice(-200);
+    for(const e of recent){
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>${new Date(e.time).toLocaleTimeString()}</td><td>${e.name}</td><td>${e.type||''}</td><td>${e.state||''}</td><td>${(e.message||'').toString().slice(0,120)}</td>`;
+      tbody.appendChild(tr);
+    }
+    // 自動捲動到最新事件
+    if(container && autoScroll.checked) {
+      setTimeout(() => container.scrollTop = container.scrollHeight, 0);
+    }
+  }
+
+  function startMonitor(){
+    if(monitors.timer) return;
+    const base = actuatorBase.value.trim();
+    const names = cbNames.value.trim();
+    if(!base || !names){ log('❗ 請設定 Actuator Base 與 斷路器名稱'); return; }
+    ensureCBSeries(names);
+    const tick = async ()=>{
+      const now = Date.now();
+      // 一次性取得所有斷路器狀態
+      const allCBStates = await fetchAllCBStates(base);
+      const wantedNames = names.split(',').map(s=>s.trim()).filter(Boolean);
+      
+      for(const n of wantedNames){
+        const cbData = allCBStates[n];
+        if(cbData && cbData.state){
+          const y = stateToNum(cbData.state);
+          const ds = cbChart.data.datasets.find(d=>d.label===n);
+          if(ds && y!=null){ ds.data.push({x:now, y}); }
+        }
+      }
+      cbChart.update('none');
+
+      // events
+      const evs = await fetchCBEventsOnce(base, names, eventTypes.value||'');
+      if(evs.length){ monitors.events = evs; updateEvtTable(); }
+    }
+    tick();
+    monitors.timer = setInterval(tick, Math.max(1, Number(pollSec.value||2))*1000);
+    log(`🟢 監控開始，每 ${pollSec.value}s 輪詢`);
+  }
+
+  function stopMonitor(){ if(monitors.timer){ clearInterval(monitors.timer); monitors.timer=null; log('🟡 監控停止'); } }
+
+  monitorStart.addEventListener('click', startMonitor);
+  monitorStop.addEventListener('click', stopMonitor);
+
+  probeCORS.addEventListener('click', async ()=>{
+    const url = actuatorBase.value.replace(/\/$/,'') + '/circuitbreakers';
+    try{
+      const res = await fetch(url, { method:'OPTIONS', mode:corsMode.value, credentials:credentials.value });
+      log(`CORS 預檢 OPTIONS → 狀態=${res.status||0}`);
+    }catch(e){ log('CORS 預檢失敗：'+ e); }
+  });
+
+  // CUBE 系統測試設定
+  window.setupCubeTest = function() {
+    targetUrl.value = 'http://localhost:10071/txn/MFTTX101/010';
+    method.value = 'POST';
+    headers.value = JSON.stringify({
+      'Content-Type': 'application/json;charset=UTF-8'
+    }, null, 2);
+    body.value = JSON.stringify({
+      header: {
+        txnCode: 'MFTTX101',
+        channelId: '010',
+        userId: 'TEST_USER',
+        timestamp: new Date().toISOString()
+      },
+      body: {
+        testData: '測試資料',
+        message: '斷路器壓測'
+      }
+    }, null, 2);
+    actuatorBase.value = 'http://localhost:10071/actuator';
+    cbNames.value = 'testBizServer';
+    log('🔧 已設定 CUBE 系統測試參數');
+    // 立即儲存新的設定
+    remember();
+  };
+
+  // CORS 診斷功能
+  window.diagnoseCORS = async function() {
+    const url = targetUrl.value.trim() || 'http://localhost:10071/txn/MFTTX101/010';
+    log('🔍 開始 CORS 診斷...');
+    
+    // 1. 測試 OPTIONS 預檢
+    try {
+      log(`🔍 測試 OPTIONS 預檢: ${url}`);
+      const optionsRes = await fetch(url, {
+        method: 'OPTIONS',
+        headers: {
+          'Origin': window.location.origin,
+          'Access-Control-Request-Method': 'POST',
+          'Access-Control-Request-Headers': 'Content-Type'
+        },
+        mode: 'cors'
+      });
+      log(`✅ OPTIONS 回應: ${optionsRes.status} ${optionsRes.statusText}`);
+      
+      // 檢查回應標頭
+      const allowOrigin = optionsRes.headers.get('Access-Control-Allow-Origin');
+      const allowMethods = optionsRes.headers.get('Access-Control-Allow-Methods');
+      const allowHeaders = optionsRes.headers.get('Access-Control-Allow-Headers');
+      const allowCredentials = optionsRes.headers.get('Access-Control-Allow-Credentials');
+      
+      log(`🔍 Access-Control-Allow-Origin: ${allowOrigin || '❌ 未設定'}`);
+      log(`🔍 Access-Control-Allow-Methods: ${allowMethods || '❌ 未設定'}`);
+      log(`🔍 Access-Control-Allow-Headers: ${allowHeaders || '❌ 未設定'}`);
+      log(`🔍 Access-Control-Allow-Credentials: ${allowCredentials || '❌ 未設定'}`);
+      
+      if (optionsRes.status === 403) {
+        log('❌ CORS 預檢被拒絕！可能原因：');
+        log('  1. Spring Security 阻止了 OPTIONS 請求');
+        log('  2. CORS 設定未正確生效');
+        log('  3. 需要在 Security 設定中允許 OPTIONS');
+      }
+      
+    } catch (err) {
+      log(`❌ OPTIONS 失敗: ${err.message}`);
+    }
+    
+    // 2. 測試簡單的 GET 請求
+    try {
+      log(`🔍 測試簡單 GET 請求...`);
+      const getRes = await fetch(url.replace('POST', 'GET'), {
+        method: 'GET',
+        mode: 'cors'
+      });
+      log(`✅ GET 請求: ${getRes.status}`);
+    } catch (err) {
+      log(`❌ GET 請求失敗: ${err.message}`);
+    }
+    
+    // 3. 測試 no-cors 模式
+    try {
+      log(`🔍 測試 no-cors 模式...`);
+      const noCorsRes = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{"test": "no-cors"}',
+        mode: 'no-cors'
+      });
+      log(`✅ no-cors 模式成功 (opaque response)`);
+    } catch (err) {
+      log(`❌ no-cors 模式失敗: ${err.message}`);
+    }
+    
+    // 4. 建議解決方案
+    log('📋 CORS 診斷完成！解決方案：');
+    log('💡 1. 確認 Spring Security 設定：');
+    log('   @Bean');
+    log('   public SecurityFilterChain filterChain(HttpSecurity http) {');
+    log('     return http.cors().and()');
+    log('       .authorizeHttpRequests(auth -> auth');
+    log('         .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()');
+    log('         .anyRequest().permitAll())');
+    log('       .csrf().disable().build();');
+    log('   }');
+    log('💡 2. 確認 CorsConfiguration 中使用 setAllowedOriginPatterns("*")');
+    log('💡 3. 重啟應用程式確保設定生效');
+  };
+
+  // Actuator 診斷功能
+  window.diagnoseActuator = async function() {
+    const base = actuatorBase.value.trim() || 'http://localhost:10071/actuator';
+    log('🔍 開始 Actuator 診斷...');
+    
+    // 先測試基本連線
+    try {
+      log(`🔍 測試基本連線: ${base}/health`);
+      const basicRes = await fetch(`${base}/health`, {
+        method: 'GET',
+        mode: 'no-cors'  // 先用 no-cors 測試連線
+      });
+      log(`✅ no-cors 模式連線成功`);
+    } catch (err) {
+      log(`❌ 基本連線失敗: ${err.message}`);
+      log(`💡 可能原因: Actuator 未啟動或端口錯誤`);
+    }
+    
+    // 測試 OPTIONS 預檢
+    try {
+      log(`🔍 測試 Actuator OPTIONS 預檢...`);
+      const optionsRes = await fetch(`${base}/health`, {
+        method: 'OPTIONS',
+        headers: {
+          'Origin': window.location.origin,
+          'Access-Control-Request-Method': 'GET',
+          'Access-Control-Request-Headers': 'Content-Type'
+        },
+        mode: 'cors'
+      });
+      log(`✅ OPTIONS 預檢: ${optionsRes.status} ${optionsRes.statusText}`);
+      
+      // 檢查 CORS 標頭
+      const allowOrigin = optionsRes.headers.get('Access-Control-Allow-Origin');
+      const allowMethods = optionsRes.headers.get('Access-Control-Allow-Methods');
+      log(`🔍 Actuator Allow-Origin: ${allowOrigin || '❌ 未設定'}`);
+      log(`🔍 Actuator Allow-Methods: ${allowMethods || '❌ 未設定'}`);
+      
+    } catch (err) {
+      log(`❌ Actuator OPTIONS 失敗: ${err.message}`);
+      log(`💡 Actuator CORS 未正確設定`);
+    }
+    
+    // 測試各種 Actuator 端點 (使用 cors 模式)
+    const endpoints = [
+      '/health',
+      '/info', 
+      '/circuitbreakers',
+      '/circuitbreakerevents'
+    ];
+    
+    for (const endpoint of endpoints) {
+      const url = base + endpoint;
+      try {
+        log(`🔍 測試端點 (cors): ${url}`);
+        const res = await fetch(url, {
+          method: 'GET',
+          mode: 'cors',
+          credentials: 'omit'
+        });
+        
+        if (res.ok) {
+          log(`✅ ${endpoint}: ${res.status} OK`);
+          if (endpoint === '/circuitbreakers') {
+            try {
+              const data = await res.json();
+              log(`🔍 斷路器資料: ${JSON.stringify(data).substring(0, 100)}...`);
+            } catch (e) {
+              log(`⚠️ 無法解析 JSON: ${e.message}`);
+            }
+          }
+        } else {
+          log(`❌ ${endpoint}: ${res.status} ${res.statusText}`);
+        }
+      } catch (err) {
+        log(`❌ ${endpoint}: ${err.message}`);
+      }
+    }
+    
+    log('📋 Actuator 診斷完成！根據結果：');
+    
+    log('💡 1. 如果所有請求都 "Failed to fetch"：');
+    log('   - 檢查 Spring Boot 應用程式是否在 port 10071 執行');
+    log('   - 在瀏覽器直接訪問: http://localhost:10071/actuator/health');
+    log('   - 檢查防火牆或代理設定');
+    log('');
+    
+    log('💡 2. 如果是 CORS 問題，在 application.yml 加入：');
+    log('   management:');
+    log('     endpoints:');
+    log('       web:');
+    log('         exposure:');
+    log('           include: "health,info,metrics,circuitbreakers,circuitbreakerevents"');
+    log('         cors:');
+    log('           allowed-origins: "*"');
+    log('           allowed-methods: "GET,POST,OPTIONS"');
+    log('           allowed-headers: "*"');
+    log('');
+    
+    log('💡 3. Security 設定中加入：');
+    log('   .requestMatchers("/actuator/**").permitAll()');
+    log('');
+    
+    log('💡 4. 暫時測試方法：');
+    log('   - 將測試工具 CORS 模式改為 "no-cors"');
+    log('   - 或在新分頁直接訪問 Actuator 端點');
+  };
+
+  // 特定斷路器診斷功能
+  window.diagnoseSpecificCB = async function() {
+    const base = actuatorBase.value.trim() || 'http://localhost:10071/actuator';
+    const cbName = cbNames.value.trim() || 'testBizServer';
+    log('🔍 開始特定斷路器診斷...');
+    log(`🔍 斷路器名稱: ${cbName}`);
+    log('💡 只使用通用端點: /actuator/circuitbreakers');
+    
+    // 測試通用斷路器列表端點
+    try {
+      log(`🔍 測試斷路器列表: ${base}/circuitbreakers`);
+      const listRes = await fetch(`${base}/circuitbreakers`, {
+        method: 'GET',
+        mode: 'cors',
+        credentials: 'omit'
+      });
+      
+      if (listRes.ok) {
+        const data = await listRes.json();
+        log(`✅ 斷路器列表成功: ${listRes.status}`);
+        
+        // 根據你提供的格式檢查 circuitBreakers 物件
+        const circuitBreakers = data.circuitBreakers || {};
+        const availableNames = Object.keys(circuitBreakers);
+        log(`🔍 可用的斷路器: ${JSON.stringify(availableNames, null, 2)}`);
+        
+        // 檢查目標斷路器是否存在
+        if (circuitBreakers[cbName]) {
+          log(`✅ 找到斷路器 "${cbName}"`);
+          log(`🔍 完整狀態資訊: ${JSON.stringify(circuitBreakers[cbName], null, 2)}`);
+          
+          const cbInfo = circuitBreakers[cbName];
+          log(`� 關鍵資訊:`);
+          log(`   狀態: ${cbInfo.state}`);
+          log(`   失敗率: ${cbInfo.failureRate}`);
+          log(`   慢呼叫率: ${cbInfo.slowCallRate}`);
+          log(`   緩衝呼叫數: ${cbInfo.bufferedCalls}`);
+          log(`   失敗呼叫數: ${cbInfo.failedCalls}`);
+          log(`   不被允許的呼叫數: ${cbInfo.notPermittedCalls}`);
+        } else {
+          log(`❌ 斷路器 "${cbName}" 不存在`);
+          log(`� 可用的斷路器名稱: ${availableNames.join(', ')}`);
+        }
+      } else {
+        log(`❌ 斷路器列表失敗: ${listRes.status} ${listRes.statusText}`);
+      }
+    } catch (err) {
+      log(`❌ 斷路器列表錯誤: ${err.message}`);
+      if (err.message.includes('CORS')) {
+        log(`💡 CORS 錯誤解決方案:`);
+        log(`   1. 確認 management.endpoints.web.cors 設定正確`);
+        log(`   2. 在 Security 中允許: .requestMatchers("/actuator/**").permitAll()`);
+      }
+    }
+    
+    log('� 斷路器診斷完成！');
+    log('💡 提醒: 監控只使用 /actuator/circuitbreakers，不需要個別斷路器端點');
+  };
+
+  // 測試斷路器狀態更新功能 (僅用於手動控制，監控不需要)
+  window.testCircuitBreakerUpdate = async function() {
+    const base = actuatorBase.value.trim() || 'http://localhost:10071/actuator';
+    const cbName = cbNames.value.trim() || 'testBizServer';
+    log('🔧 開始測試斷路器狀態更新...');
+    log(`🔧 斷路器名稱: ${cbName}`);
+    log('⚠️ 注意: 此功能僅用於手動控制斷路器，一般監控只使用 /actuator/circuitbreakers');
+    
+    const updateUrl = `${base}/circuitbreakers/${encodeURIComponent(cbName)}`;
+    const states = ['CLOSED', 'OPEN', 'HALF_OPEN'];
+    
+    // 1. 先從通用端點取得目前狀態
+    try {
+      log(`🔍 從通用端點取得目前斷路器狀態...`);
+      const listRes = await fetch(`${base}/circuitbreakers`, {
+        method: 'GET',
+        mode: 'cors',
+        credentials: 'omit'
+      });
+      
+      if (listRes.ok) {
+        const listData = await listRes.json();
+        const currentCB = listData.circuitBreakers?.[cbName];
+        if (currentCB) {
+          log(`✅ 目前狀態: ${JSON.stringify(currentCB, null, 2)}`);
+        } else {
+          log(`❌ 在通用端點中找不到斷路器 "${cbName}"`);
+        }
+      } else {
+        log(`❌ 無法從通用端點取得狀態: ${listRes.status} ${listRes.statusText}`);
+      }
+    } catch (err) {
+      log(`❌ 取得目前狀態失敗: ${err.message}`);
+    }
+    
+    // 2. 測試各種狀態更新
+    for (const state of states) {
+      try {
+        log(`🔧 嘗試將斷路器狀態更新為: ${state}`);
+        
+        const updateRes = await fetch(updateUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+          },
+          body: JSON.stringify({ updateState: state }),
+          mode: 'cors',
+          credentials: 'omit'
+        });
+        
+        if (updateRes.ok) {
+          const responseData = await updateRes.json();
+          log(`✅ 成功更新斷路器狀態為 ${state}: ${updateRes.status}`);
+          log(`🔍 回應資料: ${JSON.stringify(responseData, null, 2)}`);
+        } else {
+          const errorText = await updateRes.text();
+          log(`❌ 更新狀態為 ${state} 失敗: ${updateRes.status} ${updateRes.statusText}`);
+          log(`🔍 錯誤內容: ${errorText}`);
+          
+          if (updateRes.status === 400) {
+            log(`💡 400錯誤通常表示參數格式錯誤或缺少必要參數`);
+            log(`💡 確認請求 Body: ${JSON.stringify({ updateState: state })}`);
+          }
+        }
+        
+        // 等待一段時間讓狀態變更生效
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+        // 驗證狀態是否真的更新了
+        try {
+          const verifyRes = await fetch(updateUrl, {
+            method: 'GET',
+            mode: 'cors',
+            credentials: 'omit'
+          });
+          
+          if (verifyRes.ok) {
+            const verifyData = await verifyRes.json();
+            log(`🔍 驗證更新後狀態: ${JSON.stringify(verifyData, null, 2)}`);
+          }
+        } catch (verifyErr) {
+          log(`⚠️ 驗證狀態時發生錯誤: ${verifyErr.message}`);
+        }
+        
+      } catch (err) {
+        log(`❌ 更新狀態 ${state} 時發生錯誤: ${err.message}`);
+        
+        if (err.message.includes('CORS')) {
+          log(`💡 CORS 錯誤解決方案:`);
+          log(`   1. 確認 management.endpoints.web.cors.allowed-methods 包含 POST`);
+          log(`   2. 確認 management.endpoints.web.cors.allowed-headers 包含 Content-Type`);
+          log(`   3. 檢查 Spring Security 是否允許 POST /actuator/circuitbreakers/**`);
+        }
+      }
+    }
+    
+    log('📋 斷路器狀態更新測試完成！');
+    log('💡 正確的 POST 請求格式：');
+    log(`   URL: ${updateUrl}`);
+    log(`   Method: POST`);
+    log(`   Headers: { "Content-Type": "application/json" }`);
+    log(`   Body: { "updateState": "CLOSED|OPEN|HALF_OPEN" }`);
+  };
+
+  // 清理舊設定功能
+  window.clearOldSettings = function() {
+    try {
+      localStorage.removeItem('cbtool_preset');
+      cbNames.value = 'testBizServer';
+      actuatorBase.value = 'http://localhost:10071/actuator';
+      log('🧹 已清理舊的瀏覽器設定，並重設為推薦值');
+      log('💡 建議點擊 "CUBE系統" 按鈕重新設定完整參數');
+      remember(); // 儲存新設定
+    } catch (e) {
+      log('❌ 清理設定時發生錯誤: ' + e.message);
+    }
+  };
+
+})();
+</script>
+</body>
+</html>
